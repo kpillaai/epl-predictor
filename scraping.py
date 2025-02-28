@@ -1,11 +1,17 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import time
 
 standings_url = "https://fbref.com/en/comps/9/premier-league-stats"
 
 # download the page, will make req to server and download html of the page
 data = requests.get(standings_url)
+
+# check if request went through, possible that there are too many requests
+if data.status_code != 200:
+    print(f"Error: Received status code {data.status_code}")
+    exit()
 
 # get BeautifulSoup object for HTML parsing
 soup = BeautifulSoup(data.text, features="html.parser")
@@ -29,5 +35,96 @@ team_url = team_urls[0]
 data = requests.get(team_url)
 
 # turn match table into dataframe. Match will look for string in table. Scanning all table tags on page and looking for scores and fixtures
-matches = pd.read_html(data.text, match="Scores & Fixtures")
-print(matches)
+matches = pd.read_html(data.text, match="Scores & Fixtures")[0]
+
+# now want to get shooting stats, similar approach as above
+soup = BeautifulSoup(data.text, features="html.parser")
+links = soup.find_all('a')
+links = [l.get("href") for l in links]
+
+# looking for elements with shooting links
+links = [l for l in links if l and 'all_comps/shooting/' in l]
+
+# download html of shooting stats page
+data = requests.get(f"https://fbref.com{links[0]}")
+
+shooting = pd.read_html(data.text, match="Shooting")[0]
+
+# get rid of top row, useless information
+shooting.columns = shooting.columns.droplevel()
+
+# At this point, matches and shooting dataframe rows will have information on the same matches, so they can be merged
+
+team_data = matches.merge(shooting[["Date", "Sh", "SoT", "Dist", "FK", "PK", "PKatt"]], on="Date")
+
+# UPSCALING
+# we will use a loop to get data for previous seasons
+years = list(range(2025, 2023, -1))
+
+# this list will contain dataframes, each dataframe will contain match logs for 1 team in 1 season
+all_matches = []
+
+standings_url = "https://fbref.com/en/comps/9/premier-league-stats"
+
+for year in years:
+    data = requests.get(standings_url)
+
+    if data.status_code != 200:
+        print(f"Error: Received status code {data.status_code}")
+        exit()
+
+    soup = BeautifulSoup(data.text, features="html.parser")
+    standings_table = soup.select('table.stats_table')[0]
+
+    links = standings_table.find_all('a')
+    links = [l.get("href") for l in links]
+    links = [l for l in links if '/squad' in l]
+    team_urls = [f"https://fbref.com{l}" for l in links]
+
+    # need to get the url of the previous season
+    previous_season = soup.select("a.prev")[0].get("href")
+    standings_url = f"https://fbref.com{previous_season}"
+
+    # scraping match logs for each team
+    for team_url in team_urls:
+        team_name = team_url.split("/")[-1].replace("-Stats", "").replace("-", " ")
+
+        data = requests.get(team_url)
+
+        if data.status_code != 200:
+            print(f"Error: Received status code {data.status_code}")
+            exit()
+
+        matches = pd.read_html(data.text, match="Scores & Fixtures")[0]
+
+        soup = BeautifulSoup(data.text, features="html.parser")
+        links = soup.find_all('a')
+        links = [l.get("href") for l in links]
+        links = [l for l in links if l and 'all_comps/shooting/' in l]
+        data = requests.get(f"https://fbref.com{links[0]}")
+        shooting = pd.read_html(data.text, match="Shooting")[0]
+        shooting.columns = shooting.columns.droplevel()
+
+        # sometimes shooting stats are unavailable, so skip teams where shooting stats are unavailable
+        try:
+            team_data = matches.merge(shooting[["Date", "Sh", "SoT", "Dist", "FK", "PK", "PKatt"]], on="Date")
+        except ValueError:
+            continue
+
+        # filter out other comps (UCL, UEL, etc.), and add a season and team element
+        team_data = team_data[team_data["Comp"] == "Premier League"]
+        team_data["Season"] = year
+        team_data["Team"] = team_name
+        all_matches.append(team_data)
+        time.sleep(3)
+    
+
+# combine all individual dataframes into 1 dataframe
+match_df = pd.concat(all_matches)
+
+# set column names to lowercase
+match_df.columns = [c.lower() for c in match_df.columns]
+
+# write to csv
+match_df.to_csv("matches.csv")
+print("Complete!")
