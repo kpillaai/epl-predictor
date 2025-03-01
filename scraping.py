@@ -2,11 +2,15 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import time
+import random
 
 standings_url = "https://fbref.com/en/comps/9/premier-league-stats"
 
 # download the page, will make req to server and download html of the page
 data = requests.get(standings_url)
+
+if data.status_code == 429:
+    print(f"Too many requests. Try again after {data.headers.get('Retry-After', 'a while')} seconds.")
 
 # check if request went through, possible that there are too many requests
 if data.status_code != 200:
@@ -66,6 +70,8 @@ all_matches = []
 
 standings_url = "https://fbref.com/en/comps/9/premier-league-stats"
 
+counter = 1
+
 for year in years:
     data = requests.get(standings_url)
 
@@ -86,10 +92,13 @@ for year in years:
     standings_url = f"https://fbref.com{previous_season}"
 
     # scraping match logs for each team
-    for team_url in team_urls:
+    for i, team_url in enumerate(team_urls):
         team_name = team_url.split("/")[-1].replace("-Stats", "").replace("-", " ")
 
         data = requests.get(team_url)
+
+        print(f"Counter: {counter}, Status code: {data.status_code}")
+
 
         if data.status_code != 200:
             print(f"Error: Received status code {data.status_code}")
@@ -101,9 +110,21 @@ for year in years:
         links = soup.find_all('a')
         links = [l.get("href") for l in links]
         links = [l for l in links if l and 'all_comps/shooting/' in l]
-        data = requests.get(f"https://fbref.com{links[0]}")
-        shooting = pd.read_html(data.text, match="Shooting")[0]
-        shooting.columns = shooting.columns.droplevel()
+        # data = requests.get(f"https://fbref.com{links[0]}")
+
+        shooting_url = f"https://fbref.com{links[0]}"
+        data = requests.get(shooting_url)
+
+        if data.status_code != 200:
+            print(f"Error: Received status code {data.status_code}")
+            exit()
+
+        try:
+            shooting = pd.read_html(data.text, match="Shooting")[0]
+            shooting.columns = shooting.columns.droplevel()
+        except ValueError:
+            print(f"No 'Shooting' table found on {shooting_url}")
+            continue
 
         # sometimes shooting stats are unavailable, so skip teams where shooting stats are unavailable
         try:
@@ -116,7 +137,12 @@ for year in years:
         team_data["Season"] = year
         team_data["Team"] = team_name
         all_matches.append(team_data)
-        time.sleep(3)
+        counter += 1
+        time.sleep(random.randint(10,15))
+
+        if (i + 1) % 5 == 0:
+            print("5 minute pause to avoid request overload")
+            time.sleep(300)
     
 
 # combine all individual dataframes into 1 dataframe
